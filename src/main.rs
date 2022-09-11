@@ -14,7 +14,7 @@ use winapi::{
         ntdef::LPCSTR,
         windef::{HBRUSH, HCURSOR, HICON, HMENU, HWND, POINT},
     },
-    um::winuser::{self, GetCursorPos, SetCursorPos},
+    um::winuser::{self, GetCursorPos},
 };
 use winrt::RuntimeContext;
 
@@ -54,6 +54,7 @@ enum PendingOperation {
 struct AppState {
     recording: RecordingState,
     pending: Vec<PendingOperation>,
+    modkey_down: bool,
 }
 
 impl AppState {
@@ -115,30 +116,36 @@ impl AppState {
     }
 
     fn key_action(&mut self, down: bool, input_key: winuser::KBDLLHOOKSTRUCT) {
-        if winuser::VK_F2 == input_key.vkCode as i32 && down {
-            if matches!(&self.recording, RecordingState::Idle) {
-                self.recording = RecordingState::Recording {
-                    record: Default::default(),
-                    start_time: Instant::now(),
-                };
-                toast_notification("Started recording");
-            } else {
-                let recorded = std::mem::replace(&mut self.recording, RecordingState::Idle);
-                self.recording = RecordingState::Idle;
-                if let RecordingState::Recording { record, .. } = recorded {
-                    let msg = format!("Stopped recording; events: {}", record.events.len());
-                    toast_notification(&msg);
-                    println!("{}", msg);
-                    self.pending.push(PendingOperation::SaveRecord { record });
-                }
-            }
+        if winuser::VK_LWIN == input_key.vkCode as i32 {
+            self.modkey_down = down;
         }
 
-        if winuser::VK_F3 == input_key.vkCode as i32
-            && down
-            && matches!(&self.recording, RecordingState::Idle)
-        {
-            self.pending.push(PendingOperation::PlaySavedRecord);
+        if self.modkey_down {
+            if winuser::VK_F2 == input_key.vkCode as i32 && down {
+                if matches!(&self.recording, RecordingState::Idle) {
+                    self.recording = RecordingState::Recording {
+                        record: Default::default(),
+                        start_time: Instant::now(),
+                    };
+                    toast_notification("Started recording");
+                } else {
+                    let recorded = std::mem::replace(&mut self.recording, RecordingState::Idle);
+                    self.recording = RecordingState::Idle;
+                    if let RecordingState::Recording { record, .. } = recorded {
+                        let msg = format!("Stopped recording; events: {}", record.events.len());
+                        toast_notification(&msg);
+                        println!("{}", msg);
+                        self.pending.push(PendingOperation::SaveRecord { record });
+                    }
+                }
+            }
+
+            if winuser::VK_F3 == input_key.vkCode as i32
+                && down
+                && matches!(&self.recording, RecordingState::Idle)
+            {
+                self.pending.push(PendingOperation::PlaySavedRecord);
+            }
         }
     }
 }
@@ -146,6 +153,7 @@ impl AppState {
 static APP_STATE: Mutex<AppState> = Mutex::new(AppState {
     recording: RecordingState::Idle,
     pending: vec![],
+    modkey_down: false,
 });
 
 fn send_click(button: MouseButton, down: bool) {
@@ -171,22 +179,49 @@ fn send_click(button: MouseButton, down: bool) {
 
         winuser::SendInput(1, &mut input, mem::size_of::<winuser::INPUT>() as i32);
     }
+}
 
-    //unsafe { winuser::keybd_event(key, 0, if down {0} else {winuser::KEYEVENTF_KEYUP}, H3KEYS_MAGIC); }
+fn send_cursor_pos(x: i32, y: i32, screen_dims: [i32; 2]) {
+    unsafe {
+        let mut input = winuser::INPUT {
+            type_: winuser::INPUT_MOUSE,
+            u: Default::default(),
+        };
+
+        *input.u.mi_mut() = winuser::MOUSEINPUT {
+            dx: ((x as i64) * 65535 / screen_dims[0] as i64) as i32,
+            dy: ((y as i64) * 65535 / screen_dims[1] as i64) as i32,
+            mouseData: 0,
+            dwFlags: winuser::MOUSEEVENTF_MOVE
+                | winuser::MOUSEEVENTF_MOVE_NOCOALESCE
+                | winuser::MOUSEEVENTF_ABSOLUTE,
+            time: 0,
+            dwExtraInfo: 0,
+        };
+
+        winuser::SendInput(1, &mut input, mem::size_of::<winuser::INPUT>() as i32);
+    }
 }
 
 pub fn play_saved_record() -> anyhow::Result<()> {
     let record = std::fs::read("record.bin")?;
     let record: Record = bincode::deserialize(&record)?;
 
+    let screen_dims = unsafe {
+        [
+            winuser::GetSystemMetrics(winuser::SM_CXSCREEN),
+            winuser::GetSystemMetrics(winuser::SM_CYSCREEN),
+        ]
+    };
+
     let t_start = Instant::now();
     for event in record.events {
         loop {
             if t_start.elapsed().as_nanos() > event.t_nanos {
                 match event.event {
-                    Event::MouseMove { x, y } => unsafe {
-                        SetCursorPos(x, y);
-                    },
+                    Event::MouseMove { x, y } => {
+                        send_cursor_pos(x, y, screen_dims);
+                    }
                     Event::MouseButton { button, down } => {
                         send_click(button, down);
                     }
