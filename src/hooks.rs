@@ -6,14 +6,16 @@ use winapi::{
         ntdef::LPCSTR,
         windef::{HBRUSH, HCURSOR, HICON, HMENU, HWND},
     },
-    um::winuser::{self},
+    um::winuser,
 };
 
 use crate::state::*;
 
 pub fn install_and_run_hooks() {
-    hook_keyboard_and_mouse();
     let hwnd = create_dummy_window();
+    assert!(!hwnd.is_null());
+
+    hook_keyboard_and_mouse();
     run_window_message_pump(hwnd);
 }
 

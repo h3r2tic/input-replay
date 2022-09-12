@@ -20,7 +20,8 @@ fn main() {
 
 fn run() {
     std::thread::spawn(|| loop {
-        handle_pending_operations(std::mem::take(&mut APP_STATE.lock().unwrap().pending));
+        let pending = std::mem::take(&mut APP_STATE.lock().unwrap().pending);
+        handle_pending_operations(pending);
         std::thread::sleep(Duration::from_millis(10));
     });
 
